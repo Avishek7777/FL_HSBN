@@ -1,0 +1,9 @@
+# configs/dirichlet_10.yaml
+# Mild heterogeneity — alpha=1.0 (near-IID baseline)
+# Inherits all settings from base.yaml via load_config() merge in runner
+
+data:
+  dirichlet_alpha: 1.0
+
+experiment:
+  name: "hsbn_fl_alpha10"

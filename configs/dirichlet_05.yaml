@@ -1,0 +1,9 @@
+# configs/dirichlet_05.yaml
+# Moderate heterogeneity — alpha=0.5
+# Inherits all settings from base.yaml via load_config() merge in runner
+
+data:
+  dirichlet_alpha: 0.5
+
+experiment:
+  name: "hsbn_fl_alpha05"

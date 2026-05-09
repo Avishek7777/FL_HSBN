@@ -1,0 +1,68 @@
+# configs/base.yaml
+#
+# Base configuration for HSBN Feedback-Driven FL
+# ================================================
+# No FedAvg. Communication protocol:
+#   Client → Server : z0_compressed (B, d1)
+#   Server → Client : feedback vector (B, d1)
+#
+# Experiment-specific configs (dirichlet_01/05/10.yaml) override
+# only data.dirichlet_alpha and experiment.name.
+
+# ── Federated Learning ────────────────────────────────────────────────────────
+fl:
+  num_clients: 20
+  num_rounds: 200
+  client_fraction: 0.5
+  local_epochs: 5
+  lr: 0.001
+  arch_dir: "architectures/"
+  seed: 42
+
+# ── Data ──────────────────────────────────────────────────────────────────────
+data:
+  root: "data/"
+  batch_size: 64
+  num_fine_classes: 100
+  num_coarse_classes: 20
+  dirichlet_alpha: 0.5 # default; overridden by experiment configs
+
+# ── Common Space ──────────────────────────────────────────────────────────────
+# d1: bottleneck output dim — all client architectures compress into this space
+# d2: apex compressed dim
+common:
+  d1: 128
+  d2: 32
+
+# ── Per-Client Bottleneck Channel ─────────────────────────────────────────────
+# Each client builds one BandwidthBottleneck(in_dim=arch.out_dim, out_dim=d1)
+# beta  : bandwidth budget in nats (soft upper bound on KL)
+# gamma : constraint tightness — how hard the budget is enforced
+channel:
+  beta: 16.0
+  gamma: 0.05
+
+# ── Feedback ──────────────────────────────────────────────────────────────────
+feedback:
+  alpha:
+    0.15 # feedback alignment loss weight
+    # small — gentle nudge, doesn't override local task
+  frequency: 1 # feedback every round
+  personalized: false # Phase 2 — not active yet
+
+# ── Server ────────────────────────────────────────────────────────────────────
+server:
+  adapter_lr: 0.001 # Z1 adapter — higher lr, learns alignment faster
+  apex_lr: 0.0005 # Z2 apex — lower lr, learns stable global semantics
+
+# ── Z1 Adapter (Transformer) ──────────────────────────────────────────────────
+adapter:
+  num_heads: 4
+  num_layers: 2
+  dropout: 0.1
+  lambda_var: 1.0 # weight for variance loss (alignment objective)
+  lambda_cls: 1.0 # weight for classification loss (semantic objective)
+
+# ── Z2 Apex (MLP) ─────────────────────────────────────────────────────────────
+apex:
+  hidden_dim: 64
