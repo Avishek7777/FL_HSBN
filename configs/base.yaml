@@ -40,8 +40,8 @@ common:
 # beta  : bandwidth budget in nats (soft upper bound on KL)
 # gamma : constraint tightness — how hard the budget is enforced
 channel:
-  beta: 16.0
-  gamma: 0.05
+  beta: 64.0
+  gamma: 0.02
 
 # ── Feedback ──────────────────────────────────────────────────────────────────
 feedback:
