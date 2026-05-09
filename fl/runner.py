@@ -22,12 +22,11 @@ Round structure:
 """
 
 import os
-import copy
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torch.optim as optim
 from typing import Dict, List
-import torch.nn.functional as F
 
 from fl.client.client_factory import build_all_clients
 from fl.server.adapter import build_adapter
@@ -115,45 +114,75 @@ class FLRunner:
             lr = server_cfg["apex_lr"],
         )
 
+        self.warmup_epochs = self.cfg["fl"].get("warmup_epochs", 1)
         self.history: List[dict] = []
 
     # =========================================================================
-    # Main Loop
+    # Warmup — local pretraining before any server interaction
     # =========================================================================
 
-    def _client_warmup(self, warmup_epochs: int = 1):
+    def _client_warmup(self):
         """
-        Pre-train all clients locally before any server interaction.
-        Gives local models enough signal to produce meaningful
-        representations before Z1 attempts cross-client alignment.
+        Pre-train ALL clients locally for warmup_epochs before FL rounds begin.
+
+        Why: round 0 clients would otherwise send representations from
+        untrained/random local models to Z1. The server would be trying
+        to align noise. Warmup gives each client enough local signal so
+        their representations carry real structure about their local data
+        distribution before cross-client alignment starts.
+
+        Only task_loss + kl_loss — no feedback (buffer is None at this stage).
+        Feedback alignment loss is automatically skipped in train_round()
+        when _feedback_buffer is None.
         """
-        print(f"\nClient warmup — {warmup_epochs} epoch(s) on local data...")
+        print(f"\nClient warmup — {self.warmup_epochs} epoch(s) on local data...")
+        print("─" * 50)
+
         for cid, client in self.clients.items():
             client.local_model.train()
             client.bottleneck.train()
             client.local_head.train()
 
-            for _ in range(warmup_epochs):
+            total_loss  = 0.0
+            num_batches = 0
+
+            for _ in range(self.warmup_epochs):
                 for batch in client.dataloader:
                     x, labels = batch
                     x      = x.to(self.device)
                     labels = labels.to(self.device)
 
                     client.optimizer.zero_grad()
-                    z0 = client.local_model(x)
+
+                    z0                    = client.local_model(x)
                     z0_compressed, kl_loss = client.bottleneck(z0)
-                    logits = client.local_head(z0_compressed)
-                    loss   = F.cross_entropy(logits, labels) + 0.01 * kl_loss
+                    logits                = client.local_head(z0_compressed)
+                    loss = F.cross_entropy(logits, labels) + 0.01 * kl_loss
+
                     loss.backward()
                     client.optimizer.step()
 
-            print(f"  Client {cid:02d} ({client.arch_name}) — warmup done")
+                    total_loss  += loss.item()
+                    num_batches += 1
 
+            avg_loss = total_loss / max(num_batches, 1)
+            print(
+                f"  Client {cid:02d} ({client.arch_name:<20}) "
+                f"avg_loss={avg_loss:.4f}"
+            )
+
+        print("─" * 50)
         print("Warmup complete. Starting FL rounds.\n")
 
+    # =========================================================================
+    # Main Loop
+    # =========================================================================
+
     def run(self):
+        # Warmup all clients before server interaction begins
+        self._client_warmup()
+
         rng = np.random.default_rng(self.seed)
-        self._client_warmup(warmup_epochs=cfg["fl"].get("warmup_epochs", 1))
 
         for round_idx in range(self.num_rounds):
 
