@@ -27,6 +27,7 @@ import numpy as np
 import torch
 import torch.optim as optim
 from typing import Dict, List
+import torch.nn.functional as F
 
 from fl.client.client_factory import build_all_clients
 from fl.server.adapter import build_adapter
@@ -120,8 +121,39 @@ class FLRunner:
     # Main Loop
     # =========================================================================
 
+    def _client_warmup(self, warmup_epochs: int = 1):
+        """
+        Pre-train all clients locally before any server interaction.
+        Gives local models enough signal to produce meaningful
+        representations before Z1 attempts cross-client alignment.
+        """
+        print(f"\nClient warmup — {warmup_epochs} epoch(s) on local data...")
+        for cid, client in self.clients.items():
+            client.local_model.train()
+            client.bottleneck.train()
+            client.local_head.train()
+
+            for _ in range(warmup_epochs):
+                for batch in client.dataloader:
+                    x, labels = batch
+                    x      = x.to(self.device)
+                    labels = labels.to(self.device)
+
+                    client.optimizer.zero_grad()
+                    z0 = client.local_model(x)
+                    z0_compressed, kl_loss = client.bottleneck(z0)
+                    logits = client.local_head(z0_compressed)
+                    loss   = F.cross_entropy(logits, labels) + 0.01 * kl_loss
+                    loss.backward()
+                    client.optimizer.step()
+
+            print(f"  Client {cid:02d} ({client.arch_name}) — warmup done")
+
+        print("Warmup complete. Starting FL rounds.\n")
+
     def run(self):
         rng = np.random.default_rng(self.seed)
+        self._client_warmup(warmup_epochs=cfg["fl"].get("warmup_epochs", 1))
 
         for round_idx in range(self.num_rounds):
 
