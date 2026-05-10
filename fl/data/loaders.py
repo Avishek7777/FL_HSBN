@@ -67,6 +67,33 @@ def build_client_loaders(
     return loaders
 
 
+def build_public_loader(
+    public_indices: np.ndarray,
+    data_root     : str,
+    batch_size    : int,
+    num_workers   : int = 2,
+) -> DataLoader:
+    """
+    Build a DataLoader for the server's public IID split.
+    Used to train Z1 and Z2 independently of client representations.
+    """
+    dataset = datasets.CIFAR100(
+        root      = data_root,
+        train     = True,
+        download  = True,
+        transform = get_cifar100_transforms(train=True),
+    )
+    subset = Subset(dataset, public_indices.tolist())
+    return DataLoader(
+        subset,
+        batch_size  = batch_size,
+        shuffle     = True,
+        num_workers = num_workers,
+        pin_memory  = True,
+        drop_last   = True,
+    )
+
+
 def build_global_test_loader(
     data_root  : str,
     batch_size : int,
