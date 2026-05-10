@@ -55,7 +55,7 @@ class ClientCrossAttention(nn.Module):
             dropout         = dropout,
             batch_first     = True,
             norm_first      = True,
-            enable_nested_tensor = False,   # silence warning
+            #enable_nested_tensor = False,   # silence warning
         )
         self.transformer = nn.TransformerEncoder(
             encoder_layer,
