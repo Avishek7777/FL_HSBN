@@ -1,13 +1,17 @@
 # configs/base.yaml
 #
-# Base configuration for HSBN Feedback-Driven FL
+# HSBN Feedback-Driven FL — Full Gradient Chain
 # ================================================
-# No FedAvg. Communication protocol:
-#   Client → Server : z0_compressed (B, d1)
-#   Server → Client : feedback vector (B, d1)
+# Server components:
+#   Z1  (adapter)    — alignment only, variance loss
+#   Z1.5 (classifier)— fine classification from aligned representations
+#   Z2  (apex)       — coarse classification + top-down feedback
 #
-# Experiment-specific configs (dirichlet_01/05/10.yaml) override
-# only data.dirichlet_alpha and experiment.name.
+# Gradient chain:
+#   coarse_loss → Z2 → z1_5 → Z1.5 (cls_loss) → z1 → Z1 (var_loss)
+#                                                      → z0_compressed
+#                                                      → bottleneck
+#                                                      → local_model
 
 # ── Federated Learning ────────────────────────────────────────────────────────
 fl:
@@ -18,6 +22,7 @@ fl:
   lr: 0.001
   arch_dir: "architectures/"
   seed: 42
+  warmup_epochs: 1
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 data:
@@ -26,46 +31,44 @@ data:
   num_fine_classes: 100
   num_coarse_classes: 20
   dirichlet_alpha: 0.5
-  public_samples_per_class: 50 # 50 × 100 classes = 5,000 public samples
+  public_samples_per_class: 50 # 50 × 100 = 5,000 public IID samples
 
 # ── Common Space ──────────────────────────────────────────────────────────────
-# d1: bottleneck output dim — all client architectures compress into this space
-# d2: apex compressed dim
 common:
-  d1: 128
-  d2: 32
+  d1: 128 # bottleneck output dim — all clients compress into this
+  d2: 32 # apex compressed dim
 
-# ── Per-Client Bottleneck Channel ─────────────────────────────────────────────
-# Each client builds one BandwidthBottleneck(in_dim=arch.out_dim, out_dim=d1)
-# beta  : bandwidth budget in nats (soft upper bound on KL)
-# gamma : constraint tightness — how hard the budget is enforced
+# ── Per-Client Bottleneck ─────────────────────────────────────────────────────
 channel:
   beta: 64.0 # matches original HSBN channel_01 budget
-  gamma: 0.02 # soft penalty
+  gamma: 0.02
 
 # ── Feedback ──────────────────────────────────────────────────────────────────
 feedback:
-  alpha:
-    0.15 # feedback alignment loss weight
-    # small — gentle nudge, doesn't override local task
-  frequency: 1 # feedback every round
-  personalized: false # Phase 2 — not active yet
+  alpha: 0.15
+  frequency: 1
+  personalized: false
 
 # ── Server ────────────────────────────────────────────────────────────────────
 server:
-  adapter_lr: 0.001 # Z1 adapter — higher lr, learns alignment faster
-  apex_lr: 0.0005 # Z2 apex — lower lr, learns stable global semantics
-  update_steps: 5 # server update steps per round (was 1 — too few)
-  encoder_dropout: 0.1 # server encoder dropout
+  adapter_lr: 0.001 # Z1 + server encoder
+  classifier_lr: 0.001 # Z1.5
+  apex_lr: 0.0005 # Z2
+  update_steps: 5
+  encoder_dropout: 0.1
 
-# ── Z1 Adapter (Transformer) ──────────────────────────────────────────────────
+# ── Z1 Adapter (alignment only) ───────────────────────────────────────────────
 adapter:
   num_heads: 4
   num_layers: 2
   dropout: 0.1
-  lambda_var: 0.5 # reduced — alignment works, don't over-weight it
-  lambda_cls: 2.0 # increased — push classification signal harder
+  lambda_var: 1.0 # variance loss only — no cls loss here anymore
 
-# ── Z2 Apex (MLP) ─────────────────────────────────────────────────────────────
+# ── Z1.5 Classifier (fine classification) ─────────────────────────────────────
+classifier:
+  d_cls: 256 # classification representation dim (d1 < d_cls < d0)
+  dropout: 0.1
+
+# ── Z2 Apex (coarse classification) ───────────────────────────────────────────
 apex:
-  hidden_dim: 64
+  hidden_dim: 128 # increased — receives d_cls=256 now, not d1=128

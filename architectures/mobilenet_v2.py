@@ -1,11 +1,12 @@
 """
 architectures/mobilenet_v2.py
 
-MobileNetV2 — pretrained, frozen backbone
-------------------------------------------
-Lightweight pretrained model, simulates a resource-constrained client
-that has a pretrained model but limited compute for fine-tuning.
-Backbone weights frozen — only projection layer trains.
+MobileNetV2 — pretrained, last block unfrozen
+----------------------------------------------
+Backbone mostly frozen for efficiency.
+Last inverted residual block (features[17], features[18]) unfrozen
+so the model can adapt MobileNet's ImageNet representations
+toward CIFAR-100 structure.
 Output: (B, 256)
 """
 
@@ -23,24 +24,29 @@ class LocalModel(nn.Module):
         backbone = models.mobilenet_v2(
             weights=models.MobileNet_V2_Weights.DEFAULT
         )
-        # Remove classifier head — keep feature extractor only
         self.backbone = backbone.features
-        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.pool     = nn.AdaptiveAvgPool2d((1, 1))
 
-        # Freeze all backbone parameters
+        # Freeze all first
         for param in self.backbone.parameters():
             param.requires_grad = False
 
-        # Trainable projection into common out_dim
-        # MobileNetV2 features output 1280 channels
+        # Unfreeze last two blocks — enough to adapt to CIFAR-100
+        for param in self.backbone[17].parameters():
+            param.requires_grad = True
+        for param in self.backbone[18].parameters():
+            param.requires_grad = True
+
+        # Trainable projection
         self.proj = nn.Sequential(
             nn.Linear(1280, 512),
             nn.ReLU(),
-            nn.Linear(512, self.out_dim),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, self.out_dim),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        with torch.no_grad():
-            z = self.backbone(x)                    # (B, 1280, H, W)
-            z = self.pool(z).flatten(1)             # (B, 1280)
+        z = self.backbone(x)
+        z = self.pool(z).flatten(1)                 # (B, 1280)
         return self.proj(z)                         # (B, 256)

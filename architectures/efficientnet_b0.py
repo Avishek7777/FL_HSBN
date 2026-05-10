@@ -1,12 +1,10 @@
 """
 architectures/efficientnet_b0.py
 
-EfficientNet-B0 — pretrained, frozen backbone
-----------------------------------------------
-Strong mid-tier pretrained model. Compound scaling makes its
-representations structurally different from plain CNNs —
-good stress test for the bottleneck alignment.
-Backbone weights frozen — only projection layer trains.
+EfficientNet-B0 — pretrained, last block unfrozen
+--------------------------------------------------
+Backbone mostly frozen. Last two feature blocks unfrozen
+for CIFAR-100 adaptation.
 Output: (B, 512)
 """
 
@@ -24,15 +22,19 @@ class LocalModel(nn.Module):
         backbone = models.efficientnet_b0(
             weights=models.EfficientNet_B0_Weights.DEFAULT
         )
-        # Keep feature extractor, drop classifier
         self.backbone = backbone.features
-        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.pool     = nn.AdaptiveAvgPool2d((1, 1))
 
-        # Freeze all backbone parameters
+        # Freeze all first
         for param in self.backbone.parameters():
             param.requires_grad = False
 
-        # EfficientNet-B0 features output 1280 channels
+        # Unfreeze last two blocks
+        for param in self.backbone[7].parameters():
+            param.requires_grad = True
+        for param in self.backbone[8].parameters():
+            param.requires_grad = True
+
         self.proj = nn.Sequential(
             nn.Linear(1280, 512),
             nn.ReLU(),
@@ -40,7 +42,6 @@ class LocalModel(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        with torch.no_grad():
-            z = self.backbone(x)                    # (B, 1280, H, W)
-            z = self.pool(z).flatten(1)             # (B, 1280)
+        z = self.backbone(x)
+        z = self.pool(z).flatten(1)                 # (B, 1280)
         return self.proj(z)                         # (B, 512)

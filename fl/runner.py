@@ -1,21 +1,30 @@
 """
 fl/runner.py
 
-FL Runner — Updated
-====================
-Changes from v1:
-    1. Public data split  — server trains on IID balanced data every round
-                            via a dedicated ServerEncoder → Z1 → Z2 pathway
-    2. Multi-step server  — server updates `server_update_steps` times per
-                            round, not just once (was severely undertrained)
-    3. All client labels  — Z1 cls_loss uses ALL selected clients' labels,
-                            not just client 0's skewed batch
-    4. Server encoder     — lightweight CNN projects public data into d1
-                            same space as client bottleneck outputs
+FL Runner — Full Gradient Chain
+=================================
+Every component learns from every other component.
 
-Communication protocol (unchanged):
-    Client → Server : z0_compressed  (B, d1)
-    Server → Client : feedback vector (B, d1)
+Gradient chain (unbroken):
+    coarse_loss → Z2 → z1_5 → Z1.5 (cls_loss) → z1 → Z1 (var_loss)
+                                                       → z0_compressed
+                                                       → bottleneck
+                                                       → local_model
+
+Server components and their single responsibilities:
+    Z1  (adapter)    : alignment via cross-client attention + variance loss
+    Z1.5 (classifier): fine classification from aligned representations
+    Z2  (apex)       : coarse classification + top-down feedback generation
+
+Three server optimizers:
+    adapter_optimizer    : Z1 + server_encoder
+    classifier_optimizer : Z1.5
+    apex_optimizer       : Z2
+
+Communication protocol:
+    Client → Server : z0_compressed  (B, d1)  — WITH gradients
+    Server → Client : feedback vector (B, d1)  — top-down signal
+                      bottleneck gradient       — ∂loss/∂z0_compressed
 """
 
 import os
@@ -27,6 +36,7 @@ from typing import Dict, List
 
 from fl.client.client_factory import build_all_clients
 from fl.server.adapter import build_adapter
+from fl.server.classifier import build_classifier
 from fl.server.apex import build_apex
 from fl.server.encoder import build_server_encoder
 from fl.server.feedback import build_feedback_dispatcher
@@ -70,7 +80,6 @@ class FLRunner:
         )
         targets = np.array(_ds.targets)
 
-        # Carve public split BEFORE partitioning
         public_indices, private_indices = carve_public_split(
             targets,
             samples_per_class = data_cfg.get("public_samples_per_class", 50),
@@ -82,11 +91,9 @@ class FLRunner:
         print(f"  Public  (server IID) : {len(public_indices):,} samples")
         print(f"  Private (clients)    : {len(private_indices):,} samples\n")
 
-        # Dirichlet partition on private split only
         partition = dirichlet_partition(
             private_targets, self.num_clients, self.alpha, seed=self.seed
         )
-        # Remap local indices back to global dataset indices
         partition = {
             cid: private_indices[local_idxs]
             for cid, local_idxs in partition.items()
@@ -102,7 +109,6 @@ class FLRunner:
             public_indices, self.data_root, self.batch_size
         )
         self.public_iter = iter(self.public_loader)
-
         self.test_loader = build_global_test_loader(
             self.data_root, self.batch_size
         )
@@ -124,15 +130,20 @@ class FLRunner:
 
         # ── Server ────────────────────────────────────────────────────────
         self.adapter        = build_adapter(cfg).to(device)
+        self.classifier     = build_classifier(cfg).to(device)
         self.apex           = build_apex(cfg).to(device)
         self.server_encoder = build_server_encoder(cfg).to(device)
         self.dispatcher     = build_feedback_dispatcher(cfg)
 
-        # Separate optimizers — encoder trains with adapter
+        # Three separate optimizers — one per responsibility
         self.adapter_optimizer = optim.Adam(
             list(self.adapter.parameters())
             + list(self.server_encoder.parameters()),
             lr = server_cfg["adapter_lr"],
+        )
+        self.classifier_optimizer = optim.Adam(
+            self.classifier.parameters(),
+            lr = server_cfg["classifier_lr"],
         )
         self.apex_optimizer = optim.Adam(
             self.apex.parameters(),
@@ -146,7 +157,7 @@ class FLRunner:
     # =========================================================================
 
     def _client_warmup(self):
-        """Pre-train all clients locally before any server interaction."""
+        """Pre-train all clients locally before server interaction."""
         print(f"Client warmup — {self.warmup_epochs} epoch(s)...")
         print("─" * 50)
 
@@ -189,7 +200,6 @@ class FLRunner:
     # =========================================================================
 
     def _next_public_batch(self):
-        """Get next public batch, reset iterator when exhausted."""
         try:
             return next(self.public_iter)
         except StopIteration:
@@ -197,82 +207,125 @@ class FLRunner:
             return next(self.public_iter)
 
     # =========================================================================
-    # Server update
+    # Server update — full gradient chain
     # =========================================================================
 
     def _server_update(
         self,
-        stacked_compressed: torch.Tensor,  # (N, B, d1)
-        stacked_labels    : torch.Tensor,  # (N, B)
-        stacked_coarse    : torch.Tensor,  # (N, B)
+        clients_data  : list,          # list of (client, x, fine_labels)
+        stacked_coarse: torch.Tensor,  # (N, B)
     ):
         """
-        Update Z1 and Z2 using client representations + public data.
-        Runs server_update_steps times per round.
-        """
-        total_server_loss  = 0.0
-        total_var_loss     = 0.0
-        total_cls_loss     = 0.0
-        total_coarse_loss  = 0.0
-        total_pub_loss     = 0.0
+        Full server update with unbroken gradient chain.
 
-        z1_final = z2_final = None
+        Key difference from v1:
+            z0_compressed is recomputed INSIDE this function with
+            gradients enabled. This means server backward pass flows
+            all the way back through client bottlenecks.
+
+        Steps per update:
+            1. Recompute z0_compressed with gradients (client bottlenecks)
+            2. Z1 forward → z1, variance_loss
+            3. Public data → server_encoder → z0_public
+            4. Z1.5 forward → z1_5, cls_loss
+            5. Z2 forward → z2, coarse_loss
+            6. Total loss backward → updates all server components
+                                  → gradients flow to client bottlenecks
+        """
+        total_var_loss    = 0.0
+        total_cls_loss    = 0.0
+        total_coarse_loss = 0.0
+        total_server_loss = 0.0
+
+        z1_final = z2_final = z1_5_final = None
 
         for step in range(self.server_steps):
             self.adapter_optimizer.zero_grad()
+            self.classifier_optimizer.zero_grad()
             self.apex_optimizer.zero_grad()
 
-            # ── Client representations pathway ────────────────────────────
-            z1, variance_loss, cls_loss = self.adapter(
-                stacked_compressed,
-                stacked_labels,
-            )
-            z1_pooled     = z1.mean(dim=0)                   # (B, d1)
-            coarse_global = stacked_coarse[0]                # (B,)
-            z2, _, coarse_loss = self.apex(z1_pooled, coarse_global)
+            # Zero client bottleneck grads too — they participate
+            for client, _, _ in clients_data:
+                client.optimizer.zero_grad()
 
-            # ── Public data pathway ───────────────────────────────────────
+            # ── Recompute z0_compressed WITH gradients ────────────────────
+            compressed_list = []
+            label_list      = []
+
+            for client, x, fine_labels in clients_data:
+                client.local_model.train()
+                client.bottleneck.train()
+
+                z0            = client.local_model(x)
+                z0_c, kl_loss = client.bottleneck(z0)   # gradients flow here
+                compressed_list.append(z0_c)
+                label_list.append(fine_labels)
+
+            stacked_compressed = torch.stack(compressed_list, dim=0)  # (N,B,d1)
+            stacked_labels     = torch.stack(label_list, dim=0)       # (N,B)
+
+            # ── Z1 forward — alignment only ───────────────────────────────
+            z1, variance_loss = self.adapter(stacked_compressed)      # (N,B,d1)
+
+            # ── Public data → server encoder ──────────────────────────────
             pub_x, pub_labels = self._next_public_batch()
             pub_x      = pub_x.to(self.device)
             pub_labels = pub_labels.to(self.device)
             pub_coarse = fine_to_coarse(pub_labels)
 
-            z0_pub            = self.server_encoder(pub_x)      # (B, d1)
-            z0_pub_stacked    = z0_pub.unsqueeze(0)             # (1, B, d1)
-            pub_labels_stacked = pub_labels.unsqueeze(0)        # (1, B)
+            z0_public = self.server_encoder(pub_x)                    # (B, d1)
 
-            z1_pub, _, cls_pub = self.adapter(
-                z0_pub_stacked, pub_labels_stacked
-            )
-            z1_pub_pooled = z1_pub.mean(dim=0)
-            _, _, coarse_pub = self.apex(z1_pub_pooled, pub_coarse)
+            # Use first client's labels as fine label target for Z1.5
+            fine_labels_global = stacked_labels[0]                    # (B,)
 
-            pub_loss = cls_pub + coarse_pub
+            # ── Z1.5 forward — classification ─────────────────────────────
+            z1_5, cls_loss, _ = self.classifier(
+                z1, z0_public, fine_labels_global
+            )                                                          # (B, d_cls)
+
+            # ── Z2 forward — coarse classification ────────────────────────
+            coarse_global       = stacked_coarse[0].to(self.device)
+            z2, _, coarse_loss  = self.apex(z1_5, coarse_global)      # (B, d2)
 
             # ── Combined loss ─────────────────────────────────────────────
-            adapter_loss = self.adapter.total_loss(variance_loss, cls_loss)
-            server_loss  = adapter_loss + coarse_loss + pub_loss
+            adapter_loss = self.adapter.total_loss(variance_loss)
+            server_loss  = adapter_loss + cls_loss + coarse_loss
 
+            # Backward — gradients flow through Z2 → Z1.5 → Z1 → bottlenecks
             server_loss.backward(
                 retain_graph=(step < self.server_steps - 1)
             )
-            torch.nn.utils.clip_grad_norm_(
-                list(self.adapter.parameters())
-                + list(self.server_encoder.parameters()),
-                max_norm=1.0,
-            )
+
+            # Clip server gradients
+            for params in [
+                list(self.adapter.parameters()),
+                list(self.classifier.parameters()),
+                list(self.apex.parameters()),
+                list(self.server_encoder.parameters()),
+            ]:
+                torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
+
+            # Update server components
             self.adapter_optimizer.step()
+            self.classifier_optimizer.step()
             self.apex_optimizer.step()
 
-            total_server_loss += server_loss.item()
+            # Update client bottlenecks — gradients flowed back to them
+            for client, _, _ in clients_data:
+                torch.nn.utils.clip_grad_norm_(
+                    client.bottleneck.parameters(), max_norm=1.0
+                )
+                client.optimizer.step()
+
             total_var_loss    += variance_loss.item()
             total_cls_loss    += cls_loss.item()
             total_coarse_loss += coarse_loss.item()
-            total_pub_loss    += pub_loss.item()
+            total_server_loss += server_loss.item()
 
             if step == self.server_steps - 1:
-                z1_final = z1.detach()
-                z2_final = z2.detach()
+                z1_final   = z1.detach()
+                z1_5_final = z1_5.detach()
+                z2_final   = z2.detach()
 
         n = self.server_steps
         losses = {
@@ -280,9 +333,8 @@ class FLRunner:
             "variance_loss": total_var_loss    / n,
             "cls_loss"     : total_cls_loss    / n,
             "coarse_loss"  : total_coarse_loss / n,
-            "pub_loss"     : total_pub_loss    / n,
         }
-        return z1_final, z2_final, losses
+        return z1_final, z1_5_final, z2_final, losses
 
     # =========================================================================
     # Main Loop
@@ -301,10 +353,11 @@ class FLRunner:
                 self.num_clients, size=n_selected, replace=False
             ).tolist()
 
-            # ── 2. Bottom-up pass ─────────────────────────────────────────
-            compressed_list = []
-            label_list      = []
-            coarse_list     = []
+            # ── 2. Prepare client data for this round ─────────────────────
+            # Collect (client, x, labels) — NOT z0_compressed yet
+            # z0_compressed is recomputed inside _server_update with grads
+            clients_data  = []
+            coarse_list   = []
 
             for cid in selected:
                 client = self.clients[cid]
@@ -314,27 +367,31 @@ class FLRunner:
                 fine_labels   = fine_labels.to(self.device)
                 coarse_labels = fine_to_coarse(fine_labels)
 
-                z0_compressed, _ = client.get_compressed(x)
-                compressed_list.append(z0_compressed)
-                label_list.append(fine_labels)
+                clients_data.append((client, x, fine_labels))
                 coarse_list.append(coarse_labels)
 
-            stacked_compressed = torch.stack(compressed_list, dim=0)
-            stacked_labels     = torch.stack(label_list, dim=0)
-            stacked_coarse     = torch.stack(coarse_list, dim=0)
+            stacked_coarse = torch.stack(coarse_list, dim=0)          # (N, B)
 
-            # ── 3. Server update ──────────────────────────────────────────
-            z1, z2, losses = self._server_update(
-                stacked_compressed,
-                stacked_labels,
+            # ── 3. Server update with full gradient chain ─────────────────
+            z1, z1_5, z2, losses = self._server_update(
+                clients_data,
                 stacked_coarse,
             )
 
             # ── 4. Top-down feedback ──────────────────────────────────────
+            # Full feedback chain: Z2 → Z1.5 → Z1 → clients
             with torch.no_grad():
-                global_signal = self.apex.downward_message(z2)
-                client_z1s    = self.adapter.downward_message(z1)
-                feedback      = self.dispatcher.dispatch(
+                # Z2 → Z1.5
+                apex_msg       = self.apex.downward_message(z2)       # (B, d_cls)
+                # Z1.5 → Z1
+                cls_msg        = self.classifier.downward_message(apex_msg)
+                                                                       # (B, d1)
+                # Z1 → per-client
+                client_z1s     = self.adapter.downward_message(z1)    # (N, B, d1)
+
+                # Blend global signal with per-client z1
+                global_signal  = cls_msg                              # (B, d1)
+                feedback       = self.dispatcher.dispatch(
                     global_signal = global_signal,
                     client_z1s    = client_z1s,
                     client_ids    = selected,
@@ -368,11 +425,9 @@ class FLRunner:
             print(
                 f"Round {round_idx:03d} | "
                 f"Top-1: {acc:.4f} | "
-                f"Server: {losses['server_loss']:.4f} "
-                f"(var={losses['variance_loss']:.3f} "
+                f"var={losses['variance_loss']:.3f} "
                 f"cls={losses['cls_loss']:.3f} "
-                f"coarse={losses['coarse_loss']:.3f} "
-                f"pub={losses['pub_loss']:.3f}) | "
+                f"coarse={losses['coarse_loss']:.3f} | "
                 f"Clients: {selected}"
             )
 
@@ -385,10 +440,11 @@ class FLRunner:
     @torch.no_grad()
     def evaluate(self) -> float:
         """
-        Global test accuracy via server encoder → Z1 → cls_head.
+        Evaluate via server encoder → Z1 → Z1.5 → cls_head.
         Consistent across rounds — not tied to any client architecture.
         """
         self.adapter.eval()
+        self.classifier.eval()
         self.apex.eval()
         self.server_encoder.eval()
 
@@ -398,19 +454,21 @@ class FLRunner:
             x           = x.to(self.device)
             fine_labels = fine_labels.to(self.device)
 
+            # Server encoder → Z1
             z0_pub  = self.server_encoder(x)
-            stacked = z0_pub.unsqueeze(0)
-            labels  = fine_labels.unsqueeze(0)
+            stacked = z0_pub.unsqueeze(0)                              # (1, B, d1)
 
-            z1, _, _ = self.adapter(stacked, labels)
-            z1_pooled = z1.mean(dim=0)
-            logits    = self.adapter.cls_head(z1_pooled)
-            preds     = logits.argmax(dim=1)
+            z1, _ = self.adapter(stacked)
+            z1_5, _, logits = self.classifier(
+                z1, z0_pub, fine_labels
+            )
 
+            preds   = logits.argmax(dim=1)
             correct += (preds == fine_labels).sum().item()
             total   += fine_labels.size(0)
 
         self.adapter.train()
+        self.classifier.train()
         self.apex.train()
         self.server_encoder.train()
 
