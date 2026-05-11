@@ -40,7 +40,7 @@ def build_client_loaders(
     partition   : Dict[int, np.ndarray],
     data_root   : str,
     batch_size  : int,
-    num_workers : int = 2,
+    num_workers : int = 0,
 ) -> Dict[int, DataLoader]:
     """
     Build a DataLoader for each client from their partition indices.
@@ -71,7 +71,7 @@ def build_public_loader(
     public_indices: np.ndarray,
     data_root     : str,
     batch_size    : int,
-    num_workers   : int = 2,
+    num_workers   : int = 0,
 ) -> DataLoader:
     """
     Build a DataLoader for the server's public IID split.
@@ -97,7 +97,7 @@ def build_public_loader(
 def build_global_test_loader(
     data_root  : str,
     batch_size : int,
-    num_workers: int = 2,
+    num_workers: int = 0,
 ) -> DataLoader:
     dataset = datasets.CIFAR100(
         root      = data_root,
