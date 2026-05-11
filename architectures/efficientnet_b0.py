@@ -11,6 +11,7 @@ Output: (B, 512)
 import torch
 import torch.nn as nn
 from torchvision import models
+import torch.nn.functional as F
 
 
 class LocalModel(nn.Module):
@@ -42,6 +43,7 @@ class LocalModel(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.interpolate(x, size=(224, 224), mode='bilinear', align_corners=False)
         z = self.backbone(x)
         z = self.pool(z).flatten(1)                 # (B, 1280)
         return self.proj(z)                         # (B, 512)
