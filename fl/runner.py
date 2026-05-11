@@ -236,6 +236,7 @@ class FLRunner:
         total_cls_loss    = 0.0
         total_coarse_loss = 0.0
         total_server_loss = 0.0
+        total_recon_loss  = 0.0
 
         z1_final = z2_final = z1_5_final = None
 
@@ -264,8 +265,8 @@ class FLRunner:
             stacked_compressed = torch.stack(compressed_list, dim=0)  # (N,B,d1)
             stacked_labels     = torch.stack(label_list, dim=0)       # (N,B)
 
-            # ── Z1 forward — alignment only ───────────────────────────────
-            z1, variance_loss = self.adapter(stacked_compressed)      # (N,B,d1)
+            # ── Z1 forward — alignment + local recon objective ───────────
+            z1, variance_loss, recon_loss = self.adapter(stacked_compressed)
 
             # ── Public data → server encoder ──────────────────────────────
             pub_x, pub_labels = self._next_public_batch()
@@ -278,18 +279,22 @@ class FLRunner:
             # Use first client's labels as fine label target for Z1.5
             fine_labels_global = stacked_labels[0]                    # (B,)
 
-            # ── Z1.5 forward — classification ─────────────────────────────
+            # ── Z1.5 forward — classification local objective ─────────────
             z1_5, cls_loss, _ = self.classifier(
                 z1, z0_public, fine_labels_global
-            )                                                          # (B, d_cls)
+            )
 
-            # ── Z2 forward — coarse classification ────────────────────────
-            coarse_global       = stacked_coarse[0].to(self.device)
-            z2, _, coarse_loss  = self.apex(z1_5, coarse_global)      # (B, d2)
+            # ── Z2 forward — coarse local objective ───────────────────────
+            coarse_global      = stacked_coarse[0].to(self.device)
+            z2, _, coarse_loss = self.apex(z1_5, coarse_global)
 
-            # ── Combined loss ─────────────────────────────────────────────
-            adapter_loss = self.adapter.total_loss(variance_loss)
-            server_loss  = adapter_loss + cls_loss + coarse_loss
+            # ── Combined loss — all per-level objectives ──────────────────
+            # lambda_var=0.1 — soft alignment, class structure survives
+            # recon keeps Z1 from discarding information while aligning
+            adapter_loss = self.adapter.total_loss(
+                variance_loss, recon_loss, lambda_recon=0.5
+            )
+            server_loss = adapter_loss + cls_loss + coarse_loss
 
             # Backward — gradients flow through Z2 → Z1.5 → Z1 → bottlenecks
             server_loss.backward(
@@ -321,6 +326,7 @@ class FLRunner:
             total_cls_loss    += cls_loss.item()
             total_coarse_loss += coarse_loss.item()
             total_server_loss += server_loss.item()
+            total_recon_loss  += recon_loss.item()
 
             if step == self.server_steps - 1:
                 z1_final   = z1.detach()
@@ -331,6 +337,7 @@ class FLRunner:
         losses = {
             "server_loss"  : total_server_loss / n,
             "variance_loss": total_var_loss    / n,
+            "recon_loss"   : total_recon_loss  / n,
             "cls_loss"     : total_cls_loss    / n,
             "coarse_loss"  : total_coarse_loss / n,
         }
@@ -426,6 +433,7 @@ class FLRunner:
                 f"Round {round_idx:03d} | "
                 f"Top-1: {acc:.4f} | "
                 f"var={losses['variance_loss']:.3f} "
+                f"recon={losses['recon_loss']:.3f} "
                 f"cls={losses['cls_loss']:.3f} "
                 f"coarse={losses['coarse_loss']:.3f} | "
                 f"Clients: {selected}"

@@ -15,60 +15,60 @@
 
 # ── Federated Learning ────────────────────────────────────────────────────────
 fl:
-  num_clients: 20
-  num_rounds: 200
+  num_clients    : 20
+  num_rounds     : 200
   client_fraction: 0.5
-  local_epochs: 5
-  lr: 0.001
-  arch_dir: "architectures/"
-  seed: 42
-  warmup_epochs: 1
+  local_epochs   : 5
+  lr             : 0.001
+  arch_dir       : "architectures/"
+  seed           : 42
+  warmup_epochs  : 1
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 data:
-  root: "data/"
-  batch_size: 64
-  num_fine_classes: 100
-  num_coarse_classes: 20
-  dirichlet_alpha: 0.5
-  public_samples_per_class: 50 # 50 × 100 = 5,000 public IID samples
+  root                    : "data/"
+  batch_size              : 64
+  num_fine_classes        : 100
+  num_coarse_classes      : 20
+  dirichlet_alpha         : 0.5
+  public_samples_per_class: 50     # 50 × 100 = 5,000 public IID samples
 
 # ── Common Space ──────────────────────────────────────────────────────────────
 common:
-  d1: 128 # bottleneck output dim — all clients compress into this
-  d2: 32 # apex compressed dim
+  d1: 128    # bottleneck output dim — all clients compress into this
+  d2: 32     # apex compressed dim
 
 # ── Per-Client Bottleneck ─────────────────────────────────────────────────────
 channel:
-  beta: 64.0 # matches original HSBN channel_01 budget
+  beta : 64.0    # matches original HSBN channel_01 budget
   gamma: 0.02
 
 # ── Feedback ──────────────────────────────────────────────────────────────────
 feedback:
-  alpha: 0.15
-  frequency: 1
+  alpha       : 0.15
+  frequency   : 1
   personalized: false
 
 # ── Server ────────────────────────────────────────────────────────────────────
 server:
-  adapter_lr: 0.001 # Z1 + server encoder
-  classifier_lr: 0.001 # Z1.5
-  apex_lr: 0.0005 # Z2
-  update_steps: 5
-  encoder_dropout: 0.1
+  adapter_lr       : 0.001    # Z1 + server encoder
+  classifier_lr    : 0.001    # Z1.5
+  apex_lr          : 0.0005   # Z2
+  update_steps     : 5
+  encoder_dropout  : 0.1
 
 # ── Z1 Adapter (alignment only) ───────────────────────────────────────────────
 adapter:
-  num_heads: 4
+  num_heads : 4
   num_layers: 2
-  dropout: 0.1
-  lambda_var: 1.0 # variance loss only — no cls loss here anymore
+  dropout   : 0.1
+  lambda_var: 0.1    # reduced — soft alignment so class structure survives
 
 # ── Z1.5 Classifier (fine classification) ─────────────────────────────────────
 classifier:
-  d_cls: 256 # classification representation dim (d1 < d_cls < d0)
+  d_cls  : 256       # classification representation dim (d1 < d_cls < d0)
   dropout: 0.1
 
 # ── Z2 Apex (coarse classification) ───────────────────────────────────────────
 apex:
-  hidden_dim: 128 # increased — receives d_cls=256 now, not d1=128
+  hidden_dim: 128    # increased — receives d_cls=256 now, not d1=128

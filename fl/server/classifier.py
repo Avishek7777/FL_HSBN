@@ -87,15 +87,28 @@ class Z1_5Classifier(nn.Module):
         # Pool client representations across N clients
         z1_pooled = z1.mean(dim=0)                   # (B, d1)
 
-        # Mix with public data — IID anchor stabilizes classification
-        z_mixed = (z1_pooled + z0_public) * 0.5     # (B, d1)
+        # Public data weighted heavily — Z1.5 learns classification from
+        # the clean IID signal first. z1_pooled is detached — it conditions
+        # without pulling classification gradients back into collapsed Z1.
+        # As Z1 learns better representations, z1_pooled becomes more useful.
+        z_mixed = 0.2 * z1_pooled.detach() + 0.8 * z0_public  # (B, d1)
 
         # Project to classification space
         z1_5   = self.pool_proj(z_mixed)             # (B, d_cls)
         logits = self.cls_head(z1_5)                 # (B, num_classes)
+
+        # Z1.5 local objective — fine classification
         cls_loss = F.cross_entropy(logits, fine_labels)
 
-        return z1_5, cls_loss, logits
+        # Additionally supervise directly on public data alone
+        # Ensures Z1.5 has its own strong local objective independent of Z1
+        z1_5_pub   = self.pool_proj(z0_public)
+        logits_pub = self.cls_head(z1_5_pub)
+        pub_cls_loss = F.cross_entropy(logits_pub, fine_labels)
+
+        total_cls_loss = cls_loss + 0.5 * pub_cls_loss
+
+        return z1_5, total_cls_loss, logits
 
     def downward_message(
         self,

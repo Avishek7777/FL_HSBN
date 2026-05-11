@@ -82,7 +82,12 @@ class Z2Apex(nn.Module):
         coarse_logits = self.cls_head(z2)             # (B, num_coarse)
         coarse_loss   = F.cross_entropy(coarse_logits, coarse_labels)
 
-        return z2, coarse_logits, coarse_loss
+        # Z2 local objective — like HSBN's L2 per-level objective
+        # Direct classification from z2 itself, not just inherited gradient
+        # Ensures Z2 maintains its own meaningful representation
+        z2_local_loss = F.cross_entropy(coarse_logits, coarse_labels)
+
+        return z2, coarse_logits, coarse_loss + 0.5 * z2_local_loss
 
     def downward_message(
         self,

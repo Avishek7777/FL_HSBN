@@ -55,7 +55,6 @@ class ClientCrossAttention(nn.Module):
             dropout         = dropout,
             batch_first     = True,
             norm_first      = True,
-            #enable_nested_tensor = False,   # silence warning
         )
         self.transformer = nn.TransformerEncoder(
             encoder_layer,
@@ -108,23 +107,30 @@ class Z1Adapter(nn.Module):
     def forward(
         self,
         client_reprs: torch.Tensor,   # (N, B, d1)
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
             client_reprs : stacked z0_compressed from clients (N, B, d1)
 
         Returns:
-            z1           : aligned representations  (N, B, d1)
-            variance_loss: scalar — alignment objective
+            z1            : aligned representations  (N, B, d1)
+            variance_loss : scalar — soft alignment objective
+            recon_loss    : scalar — local objective, preserves information
         """
         z1 = self.cross_attn(client_reprs)           # (N, B, d1)
         z1 = self.norm(z1)
 
-        # Variance loss — pulls client representations together
+        # Variance loss — soft alignment, lambda kept small so class
+        # discriminative structure survives into Z1.5
         z1_mean       = z1.mean(dim=0, keepdim=True) # (1, B, d1)
         variance_loss = ((z1 - z1_mean) ** 2).mean()
 
-        return z1, variance_loss
+        # Local reconstruction objective — Z1's own per-level objective
+        # Forces Z1 to preserve information from z0_compressed, not just align
+        # MSE between z1 and the input it received — like HSBN's L0 recon
+        recon_loss = F.mse_loss(z1, client_reprs)
+
+        return z1, variance_loss, recon_loss
 
     def downward_message(
         self,
@@ -133,8 +139,13 @@ class Z1Adapter(nn.Module):
         """Per-client feedback vectors from aligned z1."""
         return self.feedback_proj(z1)
 
-    def total_loss(self, variance_loss: torch.Tensor) -> torch.Tensor:
-        return self.lambda_var * variance_loss
+    def total_loss(
+        self,
+        variance_loss: torch.Tensor,
+        recon_loss   : torch.Tensor,
+        lambda_recon : float = 0.5,
+    ) -> torch.Tensor:
+        return self.lambda_var * variance_loss + lambda_recon * recon_loss
 
 
 def build_adapter(cfg: dict) -> Z1Adapter:
