@@ -466,7 +466,7 @@ class FLRunner:
             z0_pub  = self.server_encoder(x)
             stacked = z0_pub.unsqueeze(0)                              # (1, B, d1)
 
-            z1, _ = self.adapter(stacked)
+            z1, _, _ = self.adapter(stacked)
             z1_5, _, logits = self.classifier(
                 z1, z0_pub, fine_labels
             )
