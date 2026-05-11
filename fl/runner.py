@@ -276,17 +276,15 @@ class FLRunner:
 
             z0_public = self.server_encoder(pub_x)                    # (B, d1)
 
-            # Use first client's labels as fine label target for Z1.5
-            fine_labels_global = stacked_labels[0]                    # (B,)
-
-            # ── Z1.5 forward — classification local objective ─────────────
+            # ── Z1.5 forward — use pub_labels for supervision ─────────────
+            # pub_labels match pub_x — correct supervision
+            # stacked_labels[0] are client labels — wrong for public data
             z1_5, cls_loss, _ = self.classifier(
-                z1, z0_public, fine_labels_global
+                z1, z0_public, pub_labels
             )
 
-            # ── Z2 forward — coarse local objective ───────────────────────
-            coarse_global      = stacked_coarse[0].to(self.device)
-            z2, _, coarse_loss = self.apex(z1_5, coarse_global)
+            # ── Z2 forward — use pub_coarse for supervision ───────────────
+            z2, _, coarse_loss = self.apex(z1_5, pub_coarse)
 
             # ── Combined loss — all per-level objectives ──────────────────
             # lambda_var=0.1 — soft alignment, class structure survives
