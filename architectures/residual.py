@@ -1,11 +1,8 @@
 """
 architectures/residual.py
 
-Residual CNN — from scratch
-----------------------------
-ResNet-style skip connections without the full ResNet weight budget.
-Tests whether skip connection representations compress differently
-through the bottleneck compared to plain CNNs.
+Residual CNN — from scratch, dataset-aware
+-------------------------------------------
 Output: (B, 256)
 """
 
@@ -17,38 +14,38 @@ class ResBlock(nn.Module):
     def __init__(self, channels: int):
         super().__init__()
         self.block = nn.Sequential(
-            nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(channels, channels, 3, padding=1, bias=False),
             nn.BatchNorm2d(channels),
             nn.ReLU(),
-            nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(channels, channels, 3, padding=1, bias=False),
             nn.BatchNorm2d(channels),
         )
         self.relu = nn.ReLU()
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x):
         return self.relu(x + self.block(x))
 
 
 class LocalModel(nn.Module):
     out_dim: int = 256
 
-    def __init__(self):
+    def __init__(self, in_channels: int = 3, input_size: int = 32):
         super().__init__()
         self.stem = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(in_channels, 64, 3, padding=1, bias=False),
             nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.MaxPool2d(2),                        # 32x32 -> 16x16
+            nn.MaxPool2d(2),
         )
         self.layer1 = nn.Sequential(
             ResBlock(64),
-            nn.Conv2d(64, 128, kernel_size=1, bias=False),
-            nn.MaxPool2d(2),                        # 16x16 -> 8x8
+            nn.Conv2d(64, 128, 1, bias=False),
+            nn.MaxPool2d(2),
         )
         self.layer2 = nn.Sequential(
             ResBlock(128),
-            nn.Conv2d(128, 256, kernel_size=1, bias=False),
-            nn.AdaptiveAvgPool2d((1, 1)),           # 8x8 -> 1x1
+            nn.Conv2d(128, 256, 1, bias=False),
+            nn.AdaptiveAvgPool2d((1, 1)),
         )
         self.proj = nn.Linear(256, self.out_dim)
 
@@ -56,5 +53,4 @@ class LocalModel(nn.Module):
         z = self.stem(x)
         z = self.layer1(z)
         z = self.layer2(z)
-        z = z.flatten(1)
-        return self.proj(z)                         # (B, 256)
+        return self.proj(z.flatten(1))

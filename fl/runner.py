@@ -113,6 +113,9 @@ class FLRunner:
             self.data_root, self.batch_size
         )
 
+        from fl.checkpoint import build_checkpoint_manager
+        self.ckpt_mgr = build_checkpoint_manager(cfg)
+
         # ── Clients ───────────────────────────────────────────────────────
         self.clients: Dict[int, object] = build_all_clients(
             num_clients  = self.num_clients,
@@ -126,6 +129,8 @@ class FLRunner:
             alpha        = cfg["feedback"]["alpha"],
             device       = device,
             global_seed  = self.seed,
+            in_channels  = data_cfg.get("in_channels", 3),
+            input_size   = data_cfg.get("input_size", 32),
         )
 
         # ── Server ────────────────────────────────────────────────────────
@@ -436,6 +441,17 @@ class FLRunner:
                 f"coarse={losses['coarse_loss']:.3f} | "
                 f"Clients: {selected}"
             )
+
+        # Save checkpoint at end of run
+        self.ckpt_mgr.save(
+            adapter        = self.adapter,
+            classifier     = self.classifier,
+            apex           = self.apex,
+            server_encoder = self.server_encoder,
+            clients        = self.clients,
+            history        = self.history,
+            cfg            = self.cfg,
+        )
 
         return self.history
 

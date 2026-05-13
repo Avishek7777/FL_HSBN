@@ -16,7 +16,7 @@
 # ── Federated Learning ────────────────────────────────────────────────────────
 fl:
   num_clients: 20
-  num_rounds: 400
+  num_rounds: 200
   client_fraction: 0.5
   local_epochs: 5
   lr: 0.001
@@ -26,12 +26,17 @@ fl:
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 data:
+  name: "cifar100" # used for checkpoint naming
   root: "data/"
   batch_size: 64
   num_fine_classes: 100
   num_coarse_classes: 20
   dirichlet_alpha: 0.5
-  public_samples_per_class: 50 # 50 × 100 = 5,000 public IID samples
+  public_samples_per_class: 50
+  in_channels: 3 # 1 for FMNIST, 3 for everything else
+  input_size: 32 # native input resolution
+
+results_dir: "results/"
 
 # ── Common Space ──────────────────────────────────────────────────────────────
 common:
