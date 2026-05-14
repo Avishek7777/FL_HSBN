@@ -1,0 +1,6 @@
+# configs/cifar10_alpha01.yaml
+data:
+  dirichlet_alpha: 0.1
+
+experiment:
+  name: "cifar10_alpha01"

@@ -1,0 +1,61 @@
+# configs/cifar10_base.yaml
+#
+# CIFAR-10 base configuration
+# Inherits FL/server/feedback settings from base.yaml via load_config()
+# Only overrides dataset-specific fields
+
+fl:
+  num_clients: 20
+  num_rounds: 400
+  client_fraction: 0.5
+  local_epochs: 5
+  lr: 0.001
+  arch_dir: "architectures/"
+  seed: 42
+  warmup_epochs: 1
+
+data:
+  name: "cifar10"
+  root: "data/"
+  batch_size: 64
+  num_fine_classes: 10
+  num_coarse_classes: 10 # no superclasses — same as fine
+  dirichlet_alpha: 0.5
+  public_samples_per_class: 50 # 50 × 10 classes = 500 public samples
+  in_channels: 3
+  input_size: 32
+
+results_dir: "results/"
+
+common:
+  d1: 128
+  d2: 32
+
+channel:
+  beta: 64.0
+  gamma: 0.02
+
+feedback:
+  alpha: 0.15
+  frequency: 1
+  personalized: false
+
+server:
+  adapter_lr: 0.001
+  classifier_lr: 0.001
+  apex_lr: 0.0005
+  update_steps: 5
+  encoder_dropout: 0.1
+
+adapter:
+  num_heads: 4
+  num_layers: 2
+  dropout: 0.1
+  lambda_var: 0.1
+
+classifier:
+  d_cls: 256
+  dropout: 0.1
+
+apex:
+  hidden_dim: 128

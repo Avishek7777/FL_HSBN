@@ -16,7 +16,7 @@
 # ── Federated Learning ────────────────────────────────────────────────────────
 fl:
   num_clients: 20
-  num_rounds: 200
+  num_rounds: 400
   client_fraction: 0.5
   local_epochs: 5
   lr: 0.001

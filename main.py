@@ -28,18 +28,28 @@ from fl.runner import FLRunner
 
 def load_config(experiment_path: str) -> dict:
     """
-    Load base.yaml then deep-merge experiment config on top.
-    Only keys present in the experiment config are overridden.
+    Load base config then deep-merge experiment config on top.
 
-    Args:
-        experiment_path: path to experiment YAML (e.g. configs/dirichlet_05.yaml)
-
-    Returns:
-        merged config dict
+    Base config selection:
+        configs/cifar10_*.yaml    → configs/cifar10_base.yaml
+        configs/fmnist_*.yaml     → configs/fmnist_base.yaml
+        configs/dirichlet_*.yaml  → configs/base.yaml  (CIFAR-100)
+        anything else             → configs/base.yaml
     """
-    base_path = os.path.join(
-        os.path.dirname(experiment_path), "base.yaml"
-    )
+    config_dir  = os.path.dirname(experiment_path)
+    exp_name    = os.path.basename(experiment_path)
+
+    # Pick the right base config based on experiment filename
+    if exp_name.startswith("cifar10_"):
+        base_name = "cifar10_base.yaml"
+    elif exp_name.startswith("fmnist_"):
+        base_name = "fmnist_base.yaml"
+    elif exp_name.startswith("tinyimagenet_"):
+        base_name = "tinyimagenet_base.yaml"
+    else:
+        base_name = "base.yaml"
+
+    base_path = os.path.join(config_dir, base_name)
 
     with open(base_path) as f:
         cfg = yaml.safe_load(f)

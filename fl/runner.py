@@ -70,15 +70,22 @@ class FLRunner:
         self.server_steps    = server_cfg.get("update_steps", 5)
         self.warmup_epochs   = fl_cfg.get("warmup_epochs", 1)
 
-        # ── Data ──────────────────────────────────────────────────────────
-        from torchvision.datasets import CIFAR100
-        import torchvision.transforms as T
+        self.dataset_name = data_cfg.get("name", "cifar100")
+        self.input_size   = data_cfg.get("input_size", 32)
 
-        _ds     = CIFAR100(
-            root=self.data_root, train=True,
-            download=True, transform=T.ToTensor()
+        # ── Data ──────────────────────────────────────────────────────────
+        from fl.data.loaders import load_dataset
+
+        _ds = load_dataset(
+            self.dataset_name, self.data_root,
+            train=True, input_size=self.input_size
         )
-        targets = np.array(_ds.targets)
+
+        # Extract targets — CIFAR/FMNIST have .targets, ImageFolder has .samples
+        if hasattr(_ds, "targets"):
+            targets = np.array(_ds.targets)
+        else:
+            targets = np.array([s[1] for s in _ds.samples])
 
         public_indices, private_indices = carve_public_split(
             targets,
@@ -100,17 +107,23 @@ class FLRunner:
         }
 
         self.client_loaders = build_client_loaders(
-            partition, self.data_root, self.batch_size
+            partition, self.data_root, self.batch_size,
+            dataset_name = self.dataset_name,
+            input_size   = self.input_size,
         )
         self.client_sizes = {
             cid: len(idxs) for cid, idxs in partition.items()
         }
         self.public_loader = build_public_loader(
-            public_indices, self.data_root, self.batch_size
+            public_indices, self.data_root, self.batch_size,
+            dataset_name = self.dataset_name,
+            input_size   = self.input_size,
         )
         self.public_iter = iter(self.public_loader)
         self.test_loader = build_global_test_loader(
-            self.data_root, self.batch_size
+            self.data_root, self.batch_size,
+            dataset_name = self.dataset_name,
+            input_size   = self.input_size,
         )
 
         from fl.checkpoint import build_checkpoint_manager
@@ -130,7 +143,7 @@ class FLRunner:
             device       = device,
             global_seed  = self.seed,
             in_channels  = data_cfg.get("in_channels", 3),
-            input_size   = data_cfg.get("input_size", 32),
+            input_size   = self.input_size,
         )
 
         # ── Server ────────────────────────────────────────────────────────
